@@ -9,7 +9,7 @@ from pathlib import Path
 
 import pytest
 
-from cssselect2 import ElementWrapper, SelectorError, compile_selector_list
+from cssselect2 import ElementWrapper, Matcher, SelectorError, compile_selector_list
 
 from .w3_selectors import invalid_selectors, valid_selectors
 
@@ -343,6 +343,98 @@ def test_html_select(selector, result):
     assert result == [
         element.etree_element.get('id', 'nil') for element in
         ElementWrapper.from_html_root(IDS_ROOT).query_all(selector)]
+
+
+NAMESPACES = {
+    'xlink': 'http://www.w3.org/1999/xlink',
+    'first': 'urn:first',
+    'second': 'urn:second',
+}
+
+NAMESPACED_ATTRIBUTES_DOCUMENT = etree.fromstring('''
+<svg xmlns:xlink="http://www.w3.org/1999/xlink"
+     xmlns:first="urn:first"
+     xmlns:second="urn:second">
+    <use id="namespaced" xlink:href="#icon"/>
+    <use id="namespaced-lang" xlink:lang="fr-FR"/>
+    <use id="duplicate" first:href="first-value" second:href="second-value"/>
+    <use id="unqualified" href="plain-value"/>
+    <use id="operators"
+         href="pre middle post"
+         xlink:href="pre middle post"
+         lang="en-US"
+         xlink:lang="en-US"
+         list="alpha beta"
+         xlink:list="alpha beta"
+         case="MixedValue"
+         xlink:case="MixedValue"/>
+</svg>
+''')
+
+
+def query_namespaced(selector):
+    root = ElementWrapper.from_xml_root(NAMESPACED_ATTRIBUTES_DOCUMENT)
+    return [
+        element.etree_element.get('id')
+        for element in root.query_all(
+            *compile_selector_list(selector, namespaces=NAMESPACES))]
+
+
+@pytest.mark.parametrize(('selector', 'result'), [
+    ('[xlink|href]', ['namespaced', 'operators']),
+    ('[*|href]', ['namespaced', 'duplicate', 'unqualified', 'operators']),
+    ('[|href]', ['unqualified', 'operators']),
+    ('[xlink|href="#icon"]', ['namespaced']),
+    ('[first|href="first-value"]', ['duplicate']),
+    ('[second|href="second-value"]', ['duplicate']),
+    ('[first|href="second-value"]', []),
+    ('[*|href="first-value"]', ['duplicate']),
+    ('[*|href="second-value"]', []),
+    ('[|href="plain-value"]', ['unqualified']),
+    ('[|href="#icon"]', []),
+])
+def test_namespaced_attributes(selector, result):
+    assert query_namespaced(selector) == result
+
+
+@pytest.mark.parametrize('namespace_prefix', ['xlink|', '*|', '|'])
+@pytest.mark.parametrize(('selector', 'result'), [
+    ('href^="pre"', ['operators']),
+    ('href$="post"', ['operators']),
+    ('href*="middle"', ['operators']),
+    ('list~="beta"', ['operators']),
+    ('lang|="en"', ['operators']),
+    ('case="mixedvalue" i', ['operators']),
+    ('case="MixedValue" s', ['operators']),
+    ('case="mixedvalue" s', []),
+])
+def test_namespaced_attribute_operators(namespace_prefix, selector, result):
+    assert query_namespaced(f'[{namespace_prefix}{selector}]') == result
+
+
+def test_undefined_attribute_namespace_prefix():
+    with pytest.raises(SelectorError, match='undefined namespace prefix'):
+        compile_selector_list('[xlink|href]')
+
+
+def test_any_namespace_attribute_name_is_case_insensitive_in_html():
+    root = ElementWrapper.from_html_root(etree.fromstring('<div href="x"/>'))
+    assert root.matches('[*|HREF]')
+
+
+def test_matcher_with_namespaced_lang_attribute():
+    matcher = Matcher()
+    for selector in ('[xlink|lang]', '[*|lang]'):
+        compiled_selector = compile_selector_list(
+            selector, namespaces=NAMESPACES)[0]
+        matcher.add_selector(compiled_selector, selector)
+    root = ElementWrapper.from_xml_root(NAMESPACED_ATTRIBUTES_DOCUMENT)
+    element = next(
+        element for element in root.iter_subtree()
+        if element.etree_element.get('id') == 'namespaced-lang')
+    assert [
+        payload for *_, payload in matcher.match(element)
+    ] == ['[xlink|lang]', '[*|lang]']
 
 
 # Data borrowed from http://mootools.net/slickspeed/
