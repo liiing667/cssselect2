@@ -11,6 +11,20 @@ from .parser import SelectorError
 split_whitespace = re.compile('[^ \t\r\n\f]+').findall
 
 
+def any_namespace_attribute(element, name):
+    """Return the first attribute with given local name, in any namespace.
+
+    Attributes with no namespace match too. If several attributes share the
+    same local name in different namespaces, the first one in element order is
+    returned. Return :obj:`None` if no attribute matches.
+
+    """
+    for key, value in element.attrib.items():
+        if key.rsplit('}', 1)[-1] == name:
+            return value
+    return None
+
+
 def compile_selector_list(input, namespaces=None):
     """Compile a (comma-separated) list of selectors.
 
@@ -40,6 +54,7 @@ class CompiledSelector:
             'split_whitespace': split_whitespace,
             'ascii_lower': ascii_lower,
             'urlparse': urlparse,
+            'any_namespace_attribute': any_namespace_attribute,
         }
         self.test = eval('lambda el: ' + source, eval_globals, {})
         self.specificity = parsed_selector.specificity
@@ -239,7 +254,43 @@ def _compile_node(selector):
             else:
                 raise SelectorError('Unknown attribute operator', selector.operator)
         else:  # In any namespace
-            raise NotImplementedError  # TODO
+            if selector.name == selector.lower_name:
+                name = repr(selector.name)
+            else:
+                name = (
+                    f'({selector.lower_name!r} if el.in_html_document '
+                    f'else {selector.name!r})')
+            exists = f'any_namespace_attribute(el.etree_element, {name}) is not None'
+            attribute_value = (
+                f'(any_namespace_attribute(el.etree_element, {name}) or "")')
+            value = selector.value
+            if selector.case_sensitive is False:
+                value = value.lower()
+                attribute_value += '.lower()'
+            if selector.operator is None:
+                return exists
+            elif selector.operator == '=':
+                return f'{exists} and {attribute_value} == {value!r}'
+            elif selector.operator == '~=':
+                return (
+                    '0' if len(value.split()) != 1 or value.strip() != value
+                    else f'{value!r} in split_whitespace({attribute_value})')
+            elif selector.operator == '|=':
+                return (
+                    f'{exists} and {attribute_value} == {value!r} or '
+                    f'{attribute_value}.startswith({(value + "-")!r})')
+            elif selector.operator == '^=':
+                if value:
+                    return f'{attribute_value}.startswith({value!r})'
+                else:
+                    return '0'
+            elif selector.operator == '$=':
+                return (
+                    f'{attribute_value}.endswith({value!r})' if value else '0')
+            elif selector.operator == '*=':
+                return f'{value!r} in {attribute_value}' if value else '0'
+            else:
+                raise SelectorError('Unknown attribute operator', selector.operator)
 
     elif isinstance(selector, parser.PseudoClassSelector):
         if selector.name in ('link', 'any-link', 'local-link'):

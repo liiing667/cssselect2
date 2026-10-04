@@ -53,7 +53,7 @@ valid_selectors = [
     if not set(test.get('exclude', ())) & {'document', 'xhtml'}]
 
 # Mark failing tests
-for failing in (2, 9, 104, 105, 111, 197, 198):
+for failing in (2, 104, 105, 111, 197, 198):
     valid_selectors[failing] = pytest.param(
         valid_selectors[failing], marks=pytest.mark.xfail)
 
@@ -76,6 +76,50 @@ def test_valid_selectors(test):
     if result != test['expect']:  # pragma: no cover
         raise AssertionError(
             f'{test["selector"]!r}: {result} != {test["expect"]} ({test["name"]})')
+
+
+@pytest.mark.parametrize(('selector', 'result'), [
+    ('[*|href]', ['use-1', 'use-2', 'use-3', 'link-1', 'link-2']),
+    ('[xlink|href]', ['use-1', 'use-2', 'link-1']),
+    ('[|href]', ['use-1', 'use-3']),
+    ('[*|href="#icon"]', ['use-1', 'use-2']),
+    ('[*|href^="#"]', ['use-1', 'use-2', 'use-3']),
+    ('[*|href$="icon"]', ['use-1', 'use-2']),
+    ('[*|href*="con"]', ['use-1', 'use-2']),
+    ('[*|href|="#icon"]', ['use-1', 'use-2']),
+    ('[*|title~="icon"]', ['link-1']),
+    ('[*|href="#ICON" i]', ['use-1', 'use-2', 'use-3']),
+    ('[*|href="#ICON" s]', ['use-3']),
+    ('[xlink|href="#ICON" i]', ['use-1', 'use-2']),
+    ('[|href="#ICON" i]', ['use-1', 'use-3']),
+    ('[*|href="#other"]', []),
+    ('[*|missing]', []),
+])
+def test_attribute_namespaces(selector, result):
+    document = etree.fromstring('''
+        <svg xmlns:xlink="http://www.w3.org/1999/xlink"
+             xmlns:e="http://example.org/ns">
+          <use id="use-1" xlink:href="#icon" e:href="#other" href="#ICON"/>
+          <use id="use-2" xlink:href="#icon"/>
+          <use id="use-3" href="#ICON"/>
+          <a id="link-1" xlink:href="https://example.org" xlink:title="an icon"/>
+          <a id="link-2" e:href="https://example.org"/>
+        </svg>
+    ''')
+    namespaces = {
+        'xlink': 'http://www.w3.org/1999/xlink',
+        'e': 'http://example.org/ns',
+    }
+    root = ElementWrapper.from_xml_root(document)
+    selectors = compile_selector_list(selector, namespaces=namespaces)
+    assert [element.id for element in root.query_all(*selectors)] == result
+
+
+def test_undefined_attribute_namespace():
+    with pytest.raises(SelectorError):
+        compile_selector_list('[xlink|href]')
+    with pytest.raises(SelectorError):
+        compile_selector_list('[xlink|href]', namespaces={'svg': 'urn:svg'})
 
 
 def test_lang():
